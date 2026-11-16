@@ -1,0 +1,29 @@
+# Python byte code
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+venv/
+venv_test/
+env/
+.env.local
+
+# Sensitive configurations
+.env
+
+# Database files
+*.sqlite3
+*.db
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test and coverage
+.pytest_cache/
+.coverage
+htmlcov/
