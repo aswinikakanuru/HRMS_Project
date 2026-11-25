@@ -24,61 +24,64 @@ from services.leave_service import (
 
 router = APIRouter(prefix="/leaves", tags=["Leaves"])
 
-# 1. Manage Leave Types (Admin & HR only)
+
 @router.post("/types", response_model=LeaveTypeResponse, status_code=status.HTTP_201_CREATED)
 def create_leave_type(
     data: LeaveTypeCreate,
     session: Session = Depends(get_session),
-    _: None = Depends(require_roles(["Admin", "HR"]))
+    _: User = Depends(require_roles(["Admin", "HR", "Leadership"])),
 ):
     return create_leave_type_service(session, data)
+
 
 @router.get("/types", response_model=list[LeaveTypeResponse])
 def list_leave_types(
     session: Session = Depends(get_session),
-    _ = Depends(get_current_user)
+    _=Depends(get_current_user),
 ):
     return get_active_leave_types(session)
 
-# 2. View My Leave Balances (Quota vs Used vs Remaining)
+
 @router.get("/balances")
 def get_my_leave_balances(
     session: Session = Depends(get_session),
-    employee: Employee = Depends(get_current_employee)
+    employee: Employee = Depends(get_current_employee),
 ):
     return get_leave_balances_service(session, employee.id)
 
-# 3. Employee: Apply for Leave
+
 @router.post("/apply", response_model=LeaveResponse, status_code=status.HTTP_201_CREATED)
 def apply_leave(
     data: LeaveApplyRequest,
     session: Session = Depends(get_session),
-    employee: Employee = Depends(get_current_employee)
+    employee: Employee = Depends(get_current_employee),
 ):
     return apply_leave_service(session, employee.id, data)
 
-# 4. Employee: View My Leave Requests
+
 @router.get("/my-leaves", response_model=list[LeaveResponse])
 def get_my_leaves(
     session: Session = Depends(get_session),
-    employee: Employee = Depends(get_current_employee)
+    employee: Employee = Depends(get_current_employee),
 ):
     return get_employee_leaves(session, employee.id)
 
-# 5. Manager / HR: View Pending Leaves
+
 @router.get("/pending", response_model=list[LeaveResponse])
 def get_pending_leaves(
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(["Admin", "HR", "Manager"]))
+    current_user: User = Depends(require_roles(["Leadership", "Admin", "HR", "Manager"])),
+    current_emp: Employee = Depends(get_current_employee),
 ):
-    return get_pending_leaves_service(session)
+    return get_pending_leaves_service(session, current_user, current_emp)
 
-# 6. Manager / HR: Review Approve / Reject Leave
+
 @router.post("/{leave_id}/review", response_model=LeaveApprovalResponse)
 def review_leave(
     leave_id: int,
     review_data: LeaveReviewRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(["Admin", "HR", "Manager"]))
+    current_user: User = Depends(require_roles(["Leadership", "Admin", "HR", "Manager"])),
+    current_emp: Employee = Depends(get_current_employee),
 ):
-    return review_leave_service(session, leave_id, review_data, current_user.id)
+    return review_leave_service(session, leave_id, review_data, current_user, current_emp)

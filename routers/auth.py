@@ -7,14 +7,18 @@ from database import get_session
 from schemas.user import UserCreate, UserResponse
 from schemas.auth import LoginRequest, TokenResponse
 from services.auth_service import register_user, login_user
-from dependencies.auth import get_current_user
+from dependencies.auth import get_current_user, require_roles
 from models.user import User
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# User Registration API
+# User Registration API (Admin only)
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(user_data: UserCreate, session: Session = Depends(get_session)):
+def register(
+    user_data: UserCreate,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_roles(["Admin"])),
+):
     try:
         new_user = register_user(session=session, user_data=user_data)
         return new_user

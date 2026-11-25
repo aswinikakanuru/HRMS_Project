@@ -1,6 +1,7 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, Field
 from datetime import date
 from typing import Optional
+
 
 class EmployeeCreate(BaseModel):
     employee_code: str
@@ -8,13 +9,18 @@ class EmployeeCreate(BaseModel):
     firstname: str
     lastname: str
     email: EmailStr
+    password: str = Field(min_length=6, max_length=72)
+    role: str = "Employee"
+    leadership_title: Optional[str] = None
     phone: Optional[str] = None
     date_of_birth: Optional[date] = None
     joining_date: date
     department_id: int
     designation_id: int
     manager_id: Optional[int] = None
+    shift_id: Optional[int] = None
     employee_status: str = "active"
+
 
 class EmployeeUpdate(BaseModel):
     firstname: Optional[str] = None
@@ -26,7 +32,9 @@ class EmployeeUpdate(BaseModel):
     department_id: Optional[int] = None
     designation_id: Optional[int] = None
     manager_id: Optional[int] = None
+    shift_id: Optional[int] = None
     employee_status: Optional[str] = None
+
 
 class EmployeeResponse(BaseModel):
     id: int
@@ -41,6 +49,13 @@ class EmployeeResponse(BaseModel):
     department_id: int
     designation_id: int
     manager_id: Optional[int] = None
+    shift_id: Optional[int] = None
+    department_name: Optional[str] = None
+    designation_title: Optional[str] = None
+    manager_name: Optional[str] = None
+    shift_name: Optional[str] = None
+    role: Optional[str] = None
+    leadership_title: Optional[str] = None
     employee_status: str
 
     model_config = ConfigDict(from_attributes=True)

@@ -2,6 +2,7 @@ from sqlmodel import SQLModel, Field
 from typing import Optional
 from datetime import datetime, date, timezone
 
+
 class LeaveRequest(SQLModel, table=True):
     __tablename__ = "leave_requests"
 
@@ -12,4 +13,10 @@ class LeaveRequest(SQLModel, table=True):
     end_date: date
     reason: str
     status: str = Field(default="pending_manager")
+    manager_status: str = Field(default="pending")
+    manager_comments: Optional[str] = None
+    hr_status: str = Field(default="pending")
+    hr_comments: Optional[str] = None
+    leadership_status: str = Field(default="skipped")
+    leadership_comments: Optional[str] = None
     applied_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

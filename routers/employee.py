@@ -1,50 +1,95 @@
-from fastapi import APIRouter, Depends, status
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session
+
 from database import get_session
+from dependencies.auth import get_current_employee, get_current_user, require_roles
 from models.employee import Employee
-from schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse
-from dependencies.auth import get_current_user, get_current_employee, require_roles
+from models.user import User
+from schemas.employee import EmployeeCreate, EmployeeResponse, EmployeeUpdate
+from services.approval_service import get_visible_employee_ids
 from services.employee_service import (
     create_employee as create_employee_service,
-    get_all_employees,
+    delete_employee as delete_employee_service,
+    format_employee,
     get_employee_by_id,
+    get_scoped_employees,
     update_employee as update_employee_service,
 )
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
+
 @router.post("/", response_model=EmployeeResponse, status_code=status.HTTP_201_CREATED)
 def create_employee(
     emp_data: EmployeeCreate,
     session: Session = Depends(get_session),
-    _: None = Depends(require_roles(["Admin", "HR"]))
+    _: User = Depends(require_roles(["Admin"])),
 ):
+    """Only Admin can onboard new employees and create their login email & password."""
     return create_employee_service(session, emp_data)
 
+
 @router.get("/me", response_model=EmployeeResponse)
-def get_my_profile(current_employee: Employee = Depends(get_current_employee)):
-    return current_employee
+def get_my_profile(
+    session: Session = Depends(get_session),
+    current_employee: Employee = Depends(get_current_employee),
+):
+    return format_employee(session, current_employee)
+
 
 @router.get("/", response_model=list[EmployeeResponse])
 def list_employees(
+    q: Optional[str] = Query(None, description="Search employee name, code, email, department, or designation"),
+    department_id: Optional[int] = Query(None, description="Filter by department"),
+    manager_id: Optional[int] = Query(None, description="Filter by reporting manager"),
+    scope: str = Query("auto", description="'assigned' or 'all' (CEO/HR/Admin only)"),
     session: Session = Depends(get_session),
-    current_user = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    current_emp: Employee = Depends(get_current_employee),
 ):
-    return get_all_employees(session)
+    return get_scoped_employees(
+        session=session,
+        current_user=current_user,
+        current_emp=current_emp,
+        q=q,
+        department_id=department_id,
+        manager_id=manager_id,
+        scope=scope,
+    )
+
 
 @router.get("/{employee_id}", response_model=EmployeeResponse)
 def get_employee(
     employee_id: int,
     session: Session = Depends(get_session),
-    current_user = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    current_emp: Employee = Depends(get_current_employee),
 ):
+    visible_ids = get_visible_employee_ids(session, current_user, current_emp)
+    if visible_ids is not None and employee_id not in visible_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view employees assigned to your team/department.",
+        )
     return get_employee_by_id(session, employee_id)
+
 
 @router.put("/{employee_id}", response_model=EmployeeResponse)
 def update_employee(
     employee_id: int,
     emp_data: EmployeeUpdate,
     session: Session = Depends(get_session),
-    _: None = Depends(require_roles(["Admin", "HR"]))
+    _: User = Depends(require_roles(["Admin"])),
 ):
     return update_employee_service(session, employee_id, emp_data)
+
+
+@router.delete("/{employee_id}")
+def delete_employee(
+    employee_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(["Admin"])),
+):
+    """Only Admin can delete an employee and revoke their login access."""
+    return delete_employee_service(session, employee_id, current_user)

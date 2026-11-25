@@ -2,6 +2,7 @@ from typing import Optional
 from datetime import date
 from sqlmodel import SQLModel, Field
 
+
 class Employee(SQLModel, table=True):
     __tablename__ = "employees"
 
@@ -17,4 +18,5 @@ class Employee(SQLModel, table=True):
     department_id: int = Field(foreign_key="departments.id")
     designation_id: int = Field(foreign_key="designations.id")
     manager_id: Optional[int] = Field(default=None, foreign_key="employees.id")
+    shift_id: Optional[int] = Field(default=None, foreign_key="shifts.id")
     employee_status: str = Field(default="active")
