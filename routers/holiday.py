@@ -17,7 +17,7 @@ router = APIRouter(prefix="/holidays", tags=["Holidays"])
 def create_holiday(
     holiday_data: HolidayCreate,
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(["Admin", "HR"]))
+    _: User = Depends(require_roles(["Admin", "HR", "Leadership"]))
 ):
     return create_holiday_service(session, holiday_data)
 
@@ -34,7 +34,7 @@ def list_holidays(
 def delete_holiday(
     holiday_id: int,
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(["Admin", "HR"]))
+    _: User = Depends(require_roles(["Admin", "HR", "Leadership"]))
 ):
     delete_holiday_service(session, holiday_id)
     return None

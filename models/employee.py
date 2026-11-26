@@ -19,4 +19,5 @@ class Employee(SQLModel, table=True):
     designation_id: int = Field(foreign_key="designations.id")
     manager_id: Optional[int] = Field(default=None, foreign_key="employees.id")
     shift_id: Optional[int] = Field(default=None, foreign_key="shifts.id")
+    profile_pic: Optional[str] = Field(default=None)
     employee_status: str = Field(default="active")

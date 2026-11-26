@@ -14,6 +14,7 @@ def migrate_postgres_schema():
         },
         "employees": {
             "shift_id": "INTEGER REFERENCES shifts(id)",
+            "profile_pic": "TEXT",
         },
         "attendance": {
             "shift_id": "INTEGER REFERENCES shifts(id)",
@@ -297,11 +298,54 @@ def seed_org_catalog():
         session.commit()
 
 
+def seed_leave_types():
+    """Ensure distinct leave & On-Duty types exist across all roles and departments."""
+    from models.leave_type import LeaveType
+
+    leave_catalog = [
+        ("Casual Leave", 12, "Personal errands and short planned or urgent time off"),
+        ("Sick Leave", 8, "Medical recovery, illness, or doctor consultations"),
+        ("Earned / Privilege Leave", 15, "Planned vacations and extended annual time off"),
+        ("On Duty (Client / Field Work)", 30, "Official client visits, sales/marketing field work, events & business travel"),
+        ("Compensatory Off", 6, "Comp-off earned for weekend, holiday, or on-call release work"),
+        ("Bereavement Leave", 5, "Compassionate leave for immediate family bereavement"),
+        ("Parental Leave", 15, "Maternity or paternity care leave"),
+    ]
+
+    with Session(engine) as session:
+        # Replace legacy duplicate-quota "Paid Time Off" with "Sick Leave" if "Sick Leave" doesn't exist
+        pto = session.exec(select(LeaveType).where(LeaveType.name == "Paid Time Off")).first()
+        sick = session.exec(select(LeaveType).where(LeaveType.name == "Sick Leave")).first()
+        if pto and not sick:
+            pto.name = "Sick Leave"
+            pto.annual_quota = 8
+            pto.description = "Medical recovery, illness, or doctor consultations"
+            pto.is_active = True
+            session.add(pto)
+            session.commit()
+
+        existing_map = {
+            (lt.name or "").strip().lower(): lt
+            for lt in session.exec(select(LeaveType)).all()
+        }
+        for name, quota, desc in leave_catalog:
+            lt = existing_map.get(name.lower())
+            if not lt:
+                session.add(LeaveType(name=name, annual_quota=quota, description=desc, is_active=True))
+            else:
+                lt.annual_quota = quota
+                lt.description = desc
+                lt.is_active = True
+                session.add(lt)
+        session.commit()
+
+
 def create_db_tables():
     SQLModel.metadata.create_all(engine)
     migrate_postgres_schema()
     seed_initial_shifts()
     seed_org_catalog()
+    seed_leave_types()
 
 
 def get_session():

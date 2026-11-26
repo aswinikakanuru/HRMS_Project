@@ -1,3 +1,5 @@
+import os
+import uuid
 from typing import Optional
 from fastapi import HTTPException, status
 from sqlmodel import Session, select
@@ -7,8 +9,18 @@ from models.designation import Designation
 from models.employee import Employee
 from models.shift import Shift
 from models.user import User
-from schemas.employee import EmployeeCreate, EmployeeResponse, EmployeeUpdate
+from schemas.employee import EmployeeCreate, EmployeeDirectoryItem, EmployeeResponse, EmployeeUpdate
 from services.approval_service import get_visible_employee_ids
+
+AVATAR_UPLOAD_DIR = os.path.join("frontend", "uploads", "avatars")
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+MAX_AVATAR_BYTES = 5 * 1024 * 1024
 
 
 def format_employee(session: Session, emp: Employee) -> EmployeeResponse:
@@ -35,9 +47,11 @@ def format_employee(session: Session, emp: Employee) -> EmployeeResponse:
         department_name=dept.name if dept else None,
         designation_title=desig.title if desig else None,
         manager_name=f"{mgr.firstname} {mgr.lastname}".strip() if mgr else None,
+        manager_email=mgr.email if mgr else None,
         shift_name=shift.name if shift else "General Shift",
         role=user.role if user else "Employee",
         leadership_title=user.leadership_title if user else None,
+        profile_pic=emp.profile_pic,
         employee_status=emp.employee_status,
     )
 
@@ -186,6 +200,102 @@ def update_employee(session: Session, employee_id: int, emp_data: EmployeeUpdate
     return format_employee(session, emp)
 
 
+def _delete_local_avatar(pic_url: Optional[str]) -> None:
+    if not pic_url or not pic_url.startswith("/static/uploads/avatars/"):
+        return
+    fname = os.path.basename(pic_url)
+    fpath = os.path.join(AVATAR_UPLOAD_DIR, fname)
+    if os.path.isfile(fpath):
+        try:
+            os.remove(fpath)
+        except OSError:
+            pass
+
+
+def update_my_profile_pic(
+    session: Session,
+    emp: Employee,
+    file_bytes: bytes,
+    content_type: str,
+    filename: Optional[str] = None,
+) -> EmployeeResponse:
+    """Upload or update an employee's optional profile picture."""
+    if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty image file")
+    if len(file_bytes) > MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image size must be 5 MB or less")
+
+    ctype = (content_type or "").lower().split(";")[0].strip()
+    ext = ALLOWED_IMAGE_TYPES.get(ctype)
+    if not ext and filename:
+        raw_ext = os.path.splitext(filename)[1].lstrip(".").lower()
+        if raw_ext in {"jpg", "jpeg", "png", "webp", "gif"}:
+            ext = "jpg" if raw_ext == "jpeg" else raw_ext
+    if not ext:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported image format. Please upload PNG, JPG, WEBP, or GIF.",
+        )
+
+    os.makedirs(AVATAR_UPLOAD_DIR, exist_ok=True)
+    _delete_local_avatar(emp.profile_pic)
+
+    new_name = f"emp_{emp.id}_{uuid.uuid4().hex[:8]}.{ext}"
+    with open(os.path.join(AVATAR_UPLOAD_DIR, new_name), "wb") as f:
+        f.write(file_bytes)
+
+    emp.profile_pic = f"/static/uploads/avatars/{new_name}"
+    session.add(emp)
+    session.commit()
+    session.refresh(emp)
+    return format_employee(session, emp)
+
+
+def remove_my_profile_pic(session: Session, emp: Employee) -> EmployeeResponse:
+    """Clear an employee's optional profile picture."""
+    _delete_local_avatar(emp.profile_pic)
+    emp.profile_pic = None
+    session.add(emp)
+    session.commit()
+    session.refresh(emp)
+    return format_employee(session, emp)
+
+
+def search_company_directory(session: Session, q: Optional[str] = None) -> list[EmployeeDirectoryItem]:
+    """Company-wide read-only people lookup returning name, email, role, emp ID, and reporting manager details."""
+    emps = session.exec(select(Employee).order_by(Employee.firstname, Employee.lastname)).all()
+    emp_map = {e.id: e for e in emps}
+    user_map = {u.id: u for u in session.exec(select(User)).all()}
+
+    items: list[EmployeeDirectoryItem] = []
+    for e in emps:
+        if (e.employee_status or "active").lower() != "active":
+            continue
+        u = user_map.get(e.user_id) if e.user_id else None
+        mgr = emp_map.get(e.manager_id) if e.manager_id else None
+        role_label = u.leadership_title if (u and u.leadership_title) else (u.role if u else "Employee")
+        items.append(
+            EmployeeDirectoryItem(
+                id=e.id,
+                employee_code=e.employee_code,
+                name=f"{e.firstname} {e.lastname}".strip(),
+                email=e.email,
+                role=role_label,
+                manager_name=f"{mgr.firstname} {mgr.lastname}".strip() if mgr else None,
+                manager_email=mgr.email if mgr else None,
+                profile_pic=e.profile_pic,
+            )
+        )
+
+    if q:
+        term = q.strip().lower()
+        items = [
+            it for it in items
+            if term in it.name.lower()
+        ]
+    return items
+
+
 def delete_employee(session: Session, employee_id: int, current_user: User) -> dict:
     """Admin-only deletion of an employee and their login account + dependent records."""
     from models.attendance import Attendance
@@ -233,6 +343,7 @@ def delete_employee(session: Session, employee_id: int, current_user: User) -> d
             session.delete(n)
 
     deleted_name = f"{emp.firstname} {emp.lastname}".strip()
+    _delete_local_avatar(emp.profile_pic)
     session.delete(emp)
     session.commit()
 

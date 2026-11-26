@@ -1,12 +1,12 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlmodel import Session
 
 from database import get_session
 from dependencies.auth import get_current_employee, get_current_user, require_roles
 from models.employee import Employee
 from models.user import User
-from schemas.employee import EmployeeCreate, EmployeeResponse, EmployeeUpdate
+from schemas.employee import EmployeeCreate, EmployeeDirectoryItem, EmployeeResponse, EmployeeUpdate
 from services.approval_service import get_visible_employee_ids
 from services.employee_service import (
     create_employee as create_employee_service,
@@ -14,7 +14,10 @@ from services.employee_service import (
     format_employee,
     get_employee_by_id,
     get_scoped_employees,
+    remove_my_profile_pic,
+    search_company_directory,
     update_employee as update_employee_service,
+    update_my_profile_pic,
 )
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
@@ -36,6 +39,42 @@ def get_my_profile(
     current_employee: Employee = Depends(get_current_employee),
 ):
     return format_employee(session, current_employee)
+
+
+@router.post("/me/profile-pic", response_model=EmployeeResponse)
+async def upload_my_profile_pic(
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    current_employee: Employee = Depends(get_current_employee),
+):
+    """Upload or replace the signed-in employee's optional profile picture."""
+    file_bytes = await file.read()
+    return update_my_profile_pic(
+        session=session,
+        emp=current_employee,
+        file_bytes=file_bytes,
+        content_type=file.content_type or "",
+        filename=file.filename,
+    )
+
+
+@router.delete("/me/profile-pic", response_model=EmployeeResponse)
+def delete_my_profile_pic(
+    session: Session = Depends(get_session),
+    current_employee: Employee = Depends(get_current_employee),
+):
+    """Remove the signed-in employee's profile picture."""
+    return remove_my_profile_pic(session=session, emp=current_employee)
+
+
+@router.get("/directory", response_model=list[EmployeeDirectoryItem])
+def company_people_directory(
+    q: Optional[str] = Query(None, description="Search anyone by name, EMP ID, email, role, or manager"),
+    session: Session = Depends(get_session),
+    _: User = Depends(get_current_user),
+):
+    """Global company directory search available to every logged-in employee."""
+    return search_company_directory(session, q=q)
 
 
 @router.get("/", response_model=list[EmployeeResponse])

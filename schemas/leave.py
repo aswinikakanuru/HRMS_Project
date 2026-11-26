@@ -40,6 +40,7 @@ class LeaveResponse(BaseModel):
     employee_role: Optional[str] = None
     department_name: Optional[str] = None
     leave_type_id: int
+    leave_type_name: Optional[str] = None
     start_date: date
     end_date: date
     reason: str

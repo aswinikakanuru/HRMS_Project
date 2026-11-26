@@ -53,9 +53,22 @@ class EmployeeResponse(BaseModel):
     department_name: Optional[str] = None
     designation_title: Optional[str] = None
     manager_name: Optional[str] = None
+    manager_email: Optional[str] = None
     shift_name: Optional[str] = None
     role: Optional[str] = None
     leadership_title: Optional[str] = None
+    profile_pic: Optional[str] = None
     employee_status: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EmployeeDirectoryItem(BaseModel):
+    id: int
+    employee_code: str
+    name: str
+    email: EmailStr
+    role: str
+    manager_name: Optional[str] = None
+    manager_email: Optional[str] = None
+    profile_pic: Optional[str] = None

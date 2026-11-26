@@ -1,0 +1,1613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HRMS Portal — Workforce & People Platform</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    .hrms-sidebar { background: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%); }
+    .hrms-hero { background: linear-gradient(120deg, #1d4ed8 0%, #4338ca 55%, #6d28d9 100%); }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen">
+  <div id="root">
+    <div class="flex items-center justify-center min-h-screen text-slate-400 text-sm font-medium">
+      Loading HRMS Portal...
+    </div>
+  </div>
+
+  <script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+const API_BASE = window.location.origin.includes(':8000')
+  ? window.location.origin
+  : 'http://127.0.0.1:8000';
+
+async function api(endpoint, method = 'GET', body = null) {
+  const token = localStorage.getItem('hrms_token');
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  const headers = isFormData ? {} : { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const config = { method, headers };
+  if (body && method !== 'GET') config.body = isFormData ? body : JSON.stringify(body);
+
+  const res = await fetch(`${API_BASE}${endpoint}`, config);
+  if (res.status === 401) {
+    localStorage.removeItem('hrms_token');
+    localStorage.removeItem('hrms_user');
+    localStorage.removeItem('hrms_employee');
+    window.location.reload();
+    throw new Error('Session expired');
+  }
+
+  const contentType = res.headers.get('content-type');
+  if (contentType && contentType.includes('text/csv')) return res.blob();
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Request failed' }));
+    const msg = Array.isArray(err.detail)
+      ? err.detail.map(d => d.msg || JSON.stringify(d)).join(', ')
+      : (err.detail || 'An error occurred');
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+function formatTime12(hhmm) {
+  if (!hhmm) return '';
+  const [hStr, mStr] = hhmm.split(':');
+  let h = parseInt(hStr, 10);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${mStr} ${ampm}`;
+}
+
+function formatBetweenDuration(checkIn, checkOut, fallbackHours = 0) {
+  if (checkIn && checkOut) {
+    const diffMs = Math.max(0, new Date(checkOut) - new Date(checkIn));
+    const totalMins = Math.floor(diffMs / 60000);
+    const hrs = Math.floor(totalMins / 60);
+    const mins = totalMins % 60;
+    return `${hrs}h ${String(mins).padStart(2, '0')}m`;
+  }
+  if (fallbackHours > 0) {
+    const totalMins = Math.round(fallbackHours * 60);
+    const hrs = Math.floor(totalMins / 60);
+    const mins = totalMins % 60;
+    return `${hrs}h ${String(mins).padStart(2, '0')}m`;
+  }
+  return '0h 00m';
+}
+
+function formatStatusLabel(st) {
+  if (st === 'pending_manager') return 'Pending Manager (Tier 1)';
+  if (st === 'pending_hr') return 'Pending HR (Tier 2)';
+  if (st === 'pending_leadership') return 'Pending Director / CEO';
+  if (st === 'approved') return 'Approved';
+  if (st === 'rejected') return 'Rejected';
+  return st;
+}
+
+function statusPillClass(st) {
+  if (st === 'approved') return 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200';
+  if (st === 'rejected') return 'bg-rose-50 text-rose-700 ring-1 ring-rose-200';
+  if (st === 'pending_hr') return 'bg-sky-50 text-sky-700 ring-1 ring-sky-200';
+  if (st === 'pending_leadership') return 'bg-violet-50 text-violet-700 ring-1 ring-violet-200';
+  return 'bg-amber-50 text-amber-700 ring-1 ring-amber-200';
+}
+
+function Avatar({ name, src, sizeClass = 'w-9 h-9 text-xs', ringClass = 'bg-gradient-to-tr from-indigo-600 to-violet-500 text-white' }) {
+  const initial = ((name || 'U').trim().charAt(0) || 'U').toUpperCase();
+  if (src) {
+    const fullSrc = src.startsWith('http') || src.startsWith('data:') ? src : `${API_BASE}${src}`;
+    return <img src={fullSrc} alt={name || 'Profile'} className={`${sizeClass} rounded-full object-cover flex-shrink-0`} />;
+  }
+  return (
+    <div className={`${sizeClass} ${ringClass} rounded-full font-bold flex items-center justify-center flex-shrink-0`}>
+      {initial}
+    </div>
+  );
+}
+
+function ProfilePicModal({ employee, user, onClose, onSaved, showToast }) {
+  const currentSrc = employee?.profile_pic
+    ? (employee.profile_pic.startsWith('http') ? employee.profile_pic : `${API_BASE}${employee.profile_pic}`)
+    : null;
+  const [previewUrl, setPreviewUrl] = useState(currentSrc);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleFilePick = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSelectedFile(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setPreviewUrl(ev.target.result);
+    reader.readAsDataURL(file);
+  };
+
+  const handleSave = async () => {
+    if (!selectedFile) return showToast('Select a photo first', 'info');
+    setSaving(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', selectedFile, selectedFile.name || 'profile.png');
+      const updated = await api('/employees/me/profile-pic', 'POST', fd);
+      onSaved(updated);
+      showToast('Profile photo updated');
+      onClose();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally { setSaving(false); }
+  };
+
+  const handleRemove = async () => {
+    setSaving(true);
+    try {
+      const updated = await api('/employees/me/profile-pic', 'DELETE');
+      onSaved(updated);
+      showToast('Profile photo removed');
+      onClose();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally { setSaving(false); }
+  };
+
+  const displayName = employee ? `${employee.firstname} ${employee.lastname}`.trim() : (user?.name || 'Profile');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-base font-bold text-slate-900">Profile Photo</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">✕</button>
+        </div>
+
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-36 h-36 rounded-full overflow-hidden border-4 border-indigo-100 shadow-inner bg-slate-100 flex items-center justify-center">
+            {previewUrl ? (
+              <img src={previewUrl} alt={displayName} className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-4xl font-extrabold text-indigo-600">{(displayName.charAt(0) || 'U').toUpperCase()}</span>
+            )}
+          </div>
+
+          <label className="cursor-pointer px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold text-xs transition">
+            {previewUrl ? 'Change Photo' : 'Upload Photo'}
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={handleFilePick} className="hidden" />
+          </label>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 mt-6 pt-3 border-t border-slate-100 text-xs">
+          {employee?.profile_pic ? (
+            <button type="button" disabled={saving} onClick={handleRemove} className="px-3 py-2 text-rose-600 hover:bg-rose-50 rounded-xl font-semibold">
+              Remove
+            </button>
+          ) : <span></span>}
+          <div className="flex gap-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-slate-600 font-semibold">Cancel</button>
+            <button type="button" disabled={saving || !selectedFile} onClick={handleSave} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl font-semibold">
+              {saving ? 'Saving...' : 'Save Photo'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [token, setToken] = useState(localStorage.getItem('hrms_token') || '');
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hrms_user')) || null; } catch { return null; }
+  });
+  const [employee, setEmployee] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hrms_employee')) || null; } catch { return null; }
+  });
+
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [toast, setToast] = useState(null);
+  const [unreadNotifsCount, setUnreadNotifsCount] = useState(0);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [picModalOpen, setPicModalOpen] = useState(false);
+
+  const handleEmployeeUpdate = (updatedEmp) => {
+    setEmployee(updatedEmp);
+    localStorage.setItem('hrms_employee', JSON.stringify(updatedEmp));
+  };
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3800);
+  };
+
+  const handleLoginSuccess = (authToken, authUser, authEmp) => {
+    setToken(authToken);
+    setUser(authUser);
+    setEmployee(authEmp);
+    localStorage.setItem('hrms_token', authToken);
+    localStorage.setItem('hrms_user', JSON.stringify(authUser));
+    localStorage.setItem('hrms_employee', JSON.stringify(authEmp));
+    showToast(`Welcome back, ${authEmp ? authEmp.firstname : authUser.name}`);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('hrms_token');
+    localStorage.removeItem('hrms_user');
+    localStorage.removeItem('hrms_employee');
+    setToken('');
+    setUser(null);
+    setEmployee(null);
+    showToast('Signed out', 'info');
+  };
+
+  const fetchNotificationCount = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await api('/notifications/');
+      setUnreadNotifsCount(data.filter(n => !n.is_read).length);
+    } catch {}
+  }, [token]);
+
+  useEffect(() => {
+    if (token) {
+      fetchNotificationCount();
+      const interval = setInterval(fetchNotificationCount, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [token, fetchNotificationCount]);
+
+  if (!token) {
+    return (
+      <>
+        {toast && (
+          <div className={`fixed bottom-5 right-5 z-[100] px-4 py-3 rounded-xl shadow-xl text-white text-xs font-semibold flex items-center gap-2 ${
+            toast.type === 'error' ? 'bg-rose-600' : toast.type === 'info' ? 'bg-slate-800' : 'bg-emerald-600'
+          }`}>
+            <span>{toast.message}</span>
+          </div>
+        )}
+        <LoginPage onLoginSuccess={handleLoginSuccess} showToast={showToast} />
+      </>
+    );
+  }
+
+  const isAdminOnly = user && user.role === 'Admin';
+  const isAdminOrHR = user && ['Admin', 'HR', 'Leadership'].includes(user.role);
+  const isApprover = user && ['Leadership', 'Admin', 'Manager', 'HR'].includes(user.role);
+
+  const navItems = [
+    { id: 'dashboard', label: 'Home', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
+    { id: 'attendance', label: 'Attendance', icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z' },
+    { id: 'leaves', label: 'Leaves', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
+    { id: 'wfh', label: 'Work From Home', icon: 'M3 12l9-9 9 9M4 10v10a1 1 0 001 1h14a1 1 0 001-1V10' },
+    { id: 'employees', label: 'My Team', icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z' },
+    { id: 'holidays', label: 'Holidays', icon: 'M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z' },
+    { id: 'notifications', label: 'Inbox', badge: unreadNotifsCount, icon: 'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' },
+  ];
+
+  const roleBadge = user?.leadership_title ? `${user.role} · ${user.leadership_title}` : user?.role;
+  const fullName = employee ? `${employee.firstname} ${employee.lastname}`.trim() : (user?.name || user?.email);
+
+  return (
+    <div className="min-h-screen flex bg-slate-50">
+      {toast && (
+        <div className={`fixed bottom-5 right-5 z-[100] px-4 py-3 rounded-xl shadow-xl text-white text-xs font-semibold flex items-center gap-2 ${
+          toast.type === 'error' ? 'bg-rose-600' : toast.type === 'info' ? 'bg-slate-800' : 'bg-emerald-600'
+        }`}>
+          <span>{toast.message}</span>
+        </div>
+      )}
+
+      {/* Left Sidebar */}
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 hrms-sidebar text-slate-300 flex flex-col transition-transform duration-200 lg:static lg:translate-x-0 ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="h-16 px-5 flex items-center justify-between border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-sky-400 to-indigo-500 text-white font-extrabold flex items-center justify-center text-sm shadow-lg">HR</div>
+            <div>
+              <div className="text-white font-bold text-sm tracking-tight leading-none">HRMS Portal</div>
+              <div className="text-[11px] text-indigo-300/80 mt-0.5">Enterprise Workspace</div>
+            </div>
+          </div>
+          <button onClick={() => setMobileNavOpen(false)} className="lg:hidden text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <nav className="flex-1 px-3 py-5 space-y-1 overflow-y-auto">
+          {navItems.map(item => {
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => { setActiveTab(item.id); setMobileNavOpen(false); }}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                  active ? 'bg-white/15 text-white shadow-sm' : 'text-slate-300/80 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d={item.icon} />
+                  </svg>
+                  {item.label}
+                </span>
+                {item.badge > 0 && (
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-rose-500 text-white">{item.badge}</span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="p-4 border-t border-white/10">
+          <button type="button" onClick={() => setPicModalOpen(true)} className="w-full flex items-center gap-3 mb-3 text-left group rounded-xl p-1 -m-1 hover:bg-white/5 transition" title="Upload or edit profile photo">
+            <Avatar name={fullName} src={employee?.profile_pic} sizeClass="w-9 h-9 text-xs border border-indigo-400/40" ringClass="bg-indigo-500/40 text-white" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold text-white truncate">{fullName}</div>
+              <div className="text-[10px] text-indigo-300 truncate">{roleBadge}</div>
+            </div>
+          </button>
+          <button onClick={handleLogout} className="w-full py-2 rounded-xl bg-white/10 hover:bg-rose-500/80 text-white text-xs font-semibold transition">
+            Sign Out
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="h-16 bg-white border-b border-slate-200/80 px-4 sm:px-8 flex items-center justify-between sticky top-0 z-20">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setMobileNavOpen(true)} className="lg:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100">☰</button>
+            <div>
+              <h1 className="text-sm font-bold text-slate-900">{navItems.find(n => n.id === activeTab)?.label || 'HRMS Portal'}</h1>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:inline-flex items-center px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100">
+              {roleBadge}
+            </span>
+            <button onClick={() => setActiveTab('notifications')} className="relative p-2 rounded-xl text-slate-500 hover:bg-slate-100 transition">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+              {unreadNotifsCount > 0 && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>}
+            </button>
+          </div>
+        </header>
+
+        <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-8 py-6">
+          {activeTab === 'dashboard' && <DashboardTab user={user} employee={employee} showToast={showToast} setActiveTab={setActiveTab} onOpenPicModal={() => setPicModalOpen(true)} />}
+          {activeTab === 'attendance' && <AttendanceTab user={user} employee={employee} isApprover={isApprover} showToast={showToast} />}
+          {activeTab === 'leaves' && <LeavesTab employee={employee} isManager={isApprover} showToast={showToast} />}
+          {activeTab === 'wfh' && <WFHTab employee={employee} isManager={isApprover} showToast={showToast} />}
+          {activeTab === 'employees' && <EmployeesTab user={user} isAdminOnly={isAdminOnly} showToast={showToast} />}
+          {activeTab === 'holidays' && <HolidaysTab isAdminOrHR={isAdminOrHR} showToast={showToast} />}
+          {activeTab === 'notifications' && <NotificationsTab onUpdate={fetchNotificationCount} showToast={showToast} />}
+        </main>
+      </div>
+
+      {picModalOpen && (
+        <ProfilePicModal
+          employee={employee}
+          user={user}
+          onClose={() => setPicModalOpen(false)}
+          onSaved={handleEmployeeUpdate}
+          showToast={showToast}
+        />
+      )}
+    </div>
+  );
+}
+
+// 1. LOGIN PAGE (Sign In Only — Only Admin creates new employee accounts)
+function LoginPage({ onLoginSuccess, showToast }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    if (e) e.preventDefault();
+    if (!email || !password) return showToast('Enter email and password', 'error');
+    setLoading(true);
+    try {
+      const res = await api('/auth/login-json', 'POST', { email, password });
+      localStorage.setItem('hrms_token', res.access_token);
+      const authUser = await api('/auth/getuser');
+      let authEmp = null;
+      try { authEmp = await api('/employees/me'); } catch {}
+      onLoginSuccess(res.access_token, authUser, authEmp);
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6 bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900">
+      <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl border border-slate-200/80 p-8">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-400 to-indigo-600 text-white flex items-center justify-center font-extrabold text-sm shadow-md">HR</div>
+          <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">HRMS Portal</h2>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1.5">Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="name@company.com" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1.5">Password</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <button type="submit" disabled={loading} className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm shadow-md shadow-indigo-600/20 transition disabled:opacity-50">
+            {loading ? 'Signing in...' : 'Sign In'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// 2. DASHBOARD TAB
+function DashboardTab({ user, employee, showToast, setActiveTab, onOpenPicModal }) {
+  const [summary, setSummary] = useState(null);
+  const [overview, setOverview] = useState(null);
+  const [histData, setHistData] = useState({ leave_history: [], wfh_history: [] });
+  const [histTab, setHistTab] = useState('all');
+  const [dirQuery, setDirQuery] = useState('');
+  const [dirResults, setDirResults] = useState([]);
+  const [dirOpen, setDirOpen] = useState(false);
+  const [selectedPerson, setSelectedPerson] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [clockLoading, setClockLoading] = useState(false);
+  const [liveDuration, setLiveDuration] = useState('');
+
+  const handleDirSearch = async (val) => {
+    setDirQuery(val);
+    if (!val.trim()) {
+      setDirResults([]);
+      setDirOpen(false);
+      return;
+    }
+    try {
+      const res = await api(`/employees/directory?q=${encodeURIComponent(val.trim())}`);
+      setDirResults(res);
+      setDirOpen(true);
+    } catch {}
+  };
+
+  const loadData = useCallback(async () => {
+    try {
+      if (employee) {
+        const [sum, hist] = await Promise.all([
+          api('/dashboard/my-summary'),
+          api('/dashboard/history'),
+        ]);
+        setSummary(sum);
+        if (hist) setHistData(hist);
+      }
+      if (['Leadership', 'Admin', 'HR', 'Manager'].includes(user?.role)) {
+        setOverview(await api('/dashboard/overview'));
+      }
+    } catch {} finally {
+      setLoading(false);
+    }
+  }, [employee, user]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const att = summary?.today_attendance;
+  const shift = summary?.shift;
+  const isClockedIn = att?.clocked_in;
+  const checkInTime = att?.check_in;
+  const checkOutTime = att?.check_out;
+
+  useEffect(() => {
+    if (!isClockedIn || checkOutTime) {
+      setLiveDuration('');
+      return;
+    }
+    const updateTimer = () => {
+      const diffMs = Math.max(0, new Date() - new Date(checkInTime));
+      const hrs = Math.floor(diffMs / 3600000);
+      const mins = Math.floor((diffMs % 3600000) / 60000);
+      const secs = Math.floor((diffMs % 60000) / 1000);
+      setLiveDuration(`${hrs}h ${String(mins).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`);
+    };
+    updateTimer();
+    const id = setInterval(updateTimer, 1000);
+    return () => clearInterval(id);
+  }, [isClockedIn, checkInTime, checkOutTime]);
+
+  const handleClockAction = async (action) => {
+    setClockLoading(true);
+    try {
+      await api(`/attendance/${action}`, 'POST');
+      showToast(action === 'clock-in' ? 'Clocked in (Present)' : 'Clocked out');
+      loadData();
+    } catch (err) { showToast(err.message, 'error'); } finally { setClockLoading(false); }
+  };
+
+  if (loading) return <div className="p-12 text-center text-slate-400 text-sm">Loading dashboard...</div>;
+
+  const shiftLabel = shift ? `${formatTime12(shift.start_time)} – ${formatTime12(shift.end_time)}` : '9:00 AM – 6:00 PM';
+  const todayStatus = isClockedIn ? 'Present' : 'Absent';
+
+  const leaveHist = histData?.leave_history || [];
+  const wfhHist = histData?.wfh_history || [];
+  const allActivity = [
+    ...leaveHist.map(l => ({ key: `lv-${l.id}`, kind: 'Leave', employee: l.employee_name, code: l.employee_code, when: `${l.start_date} → ${l.end_date}`, detail: `${l.leave_type}: ${l.reason}`, status: l.status, sortKey: l.applied_at || l.start_date })),
+    ...wfhHist.map(w => ({ key: `wfh-${w.id}`, kind: 'WFH', employee: w.employee_name, code: w.employee_code, when: `${w.start_date} → ${w.end_date}`, detail: w.reason, status: w.status, sortKey: w.applied_at || w.start_date })),
+  ].sort((a, b) => String(b.sortKey).localeCompare(String(a.sortKey)));
+
+  return (
+    <div className="space-y-6">
+      {/* Keka-style Company People Search Bar */}
+      <div className="relative">
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm px-4 py-2.5 flex items-center gap-3 focus-within:ring-2 focus-within:ring-indigo-500">
+          <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 100-15 7.5 7.5 0 000 15z" />
+          </svg>
+          <input
+            type="text"
+            value={dirQuery}
+            onFocus={() => { if (dirQuery.trim()) setDirOpen(true); }}
+            onChange={(e) => handleDirSearch(e.target.value)}
+            placeholder="Search employees by name..."
+            className="w-full text-xs text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none"
+          />
+          {dirQuery && (
+            <button
+              type="button"
+              onClick={() => { setDirQuery(''); setDirResults([]); setDirOpen(false); setSelectedPerson(null); }}
+              className="text-slate-400 hover:text-slate-600 text-xs font-bold px-1.5"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        {dirOpen && (
+          <div className="absolute left-0 right-0 mt-2 bg-white rounded-2xl border border-slate-200 shadow-xl z-30 max-h-72 overflow-y-auto divide-y divide-slate-100">
+            {dirResults.length === 0 ? (
+              <div className="p-4 text-center text-xs text-slate-400">No matching employee found.</div>
+            ) : dirResults.map(p => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => { setSelectedPerson(p); setDirOpen(false); }}
+                className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-indigo-50/50 transition"
+              >
+                <Avatar name={p.name} src={p.profile_pic} sizeClass="w-8 h-8 text-xs" />
+                <span className="text-xs font-semibold text-slate-900 truncate">{p.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selectedPerson && (
+        <div className="bg-white rounded-2xl border border-indigo-200/80 p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <Avatar name={selectedPerson.name} src={selectedPerson.profile_pic} sizeClass="w-14 h-14 text-base" />
+            <div className="min-w-0 space-y-0.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-sm font-extrabold text-slate-900">{selectedPerson.name}</h4>
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full font-semibold bg-indigo-50 text-indigo-700">{selectedPerson.role}</span>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">{selectedPerson.employee_code}</span>
+              </div>
+              <div className="text-xs text-slate-600">{selectedPerson.email}</div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="text-xs sm:text-right">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Reporting Manager</div>
+              <div className="font-bold text-slate-800">{selectedPerson.manager_name || 'Not Assigned'}</div>
+              {selectedPerson.manager_email && <div className="text-[11px] text-indigo-600">{selectedPerson.manager_email}</div>}
+            </div>
+            <button type="button" onClick={() => setSelectedPerson(null)} className="text-slate-400 hover:text-slate-600 text-xs font-bold px-2 py-1">✕</button>
+          </div>
+        </div>
+      )}
+
+      {/* Hero Banner & Today's Log */}
+      <div className="hrms-hero rounded-3xl p-6 sm:p-8 text-white shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className="flex items-center gap-5">
+          <div className="relative group flex-shrink-0">
+            <button
+              type="button"
+              onClick={onOpenPicModal}
+              title="Upload or edit profile photo"
+              className="rounded-full ring-4 ring-white/25 hover:ring-white/60 transition block"
+            >
+              <Avatar
+                name={summary?.employee_name || user?.name}
+                src={employee?.profile_pic}
+                sizeClass="w-16 h-16 sm:w-20 sm:h-20 text-xl sm:text-2xl"
+                ringClass="bg-white/20 text-white"
+              />
+            </button>
+            <button
+              type="button"
+              onClick={onOpenPicModal}
+              className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-white text-indigo-700 shadow-md flex items-center justify-center hover:bg-indigo-50 transition"
+              title="Edit photo"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a2 2 0 01-.878.515L7 17l.657-3.95a2 2 0 01.515-.878z" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
+              {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+            </div>
+            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+              Good day, {summary?.employee_name || user?.name}
+            </h2>
+          </div>
+        </div>
+
+        <div className="bg-white/15 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-white/20 flex items-center justify-between gap-5 min-w-[300px]">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] uppercase tracking-wider text-indigo-100 font-semibold">Today's Log (IST)</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${isClockedIn ? 'bg-emerald-400/90 text-slate-900' : 'bg-white/20 text-white'}`}>
+                {todayStatus}
+              </span>
+            </div>
+            <div className="text-lg font-bold mt-1">
+              {isClockedIn
+                ? (checkOutTime ? formatBetweenDuration(checkInTime, checkOutTime, att?.work_hours) : liveDuration || 'Active')
+                : 'Not Clocked In'}
+            </div>
+            {isClockedIn && (
+              <div className="text-[11px] text-indigo-100 mt-0.5">
+                In: {new Date(checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {checkOutTime ? ` · Out: ${new Date(checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col items-end gap-1.5">
+            {!isClockedIn ? (
+              <button onClick={() => handleClockAction('clock-in')} disabled={clockLoading} className="px-4 py-2 rounded-xl bg-white text-indigo-700 hover:bg-indigo-50 text-xs font-bold shadow-sm transition">
+                {clockLoading ? '...' : 'Clock In'}
+              </button>
+            ) : !checkOutTime ? (
+              <button onClick={() => handleClockAction('clock-out')} disabled={clockLoading} className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold shadow-sm transition">
+                {clockLoading ? '...' : 'Clock Out'}
+              </button>
+            ) : (
+              <span className="px-3 py-1.5 rounded-xl bg-white/20 text-xs font-semibold">Completed</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Role-scoped Pending Approvals */}
+      {overview && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm">
+            <div className="text-xs font-semibold text-slate-400">Total Workforce</div>
+            <div className="text-2xl font-extrabold text-slate-900 mt-1">{overview.total_employees}</div>
+          </div>
+          <div onClick={() => setActiveTab('leaves')} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm cursor-pointer hover:border-indigo-300 transition">
+            <div className="text-xs font-semibold text-slate-400">Pending Leaves</div>
+            <div className="text-2xl font-extrabold text-amber-600 mt-1">{overview.pending_approvals?.leaves || 0}</div>
+          </div>
+          <div onClick={() => setActiveTab('wfh')} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm cursor-pointer hover:border-indigo-300 transition">
+            <div className="text-xs font-semibold text-slate-400">Pending WFH</div>
+            <div className="text-2xl font-extrabold text-indigo-600 mt-1">{overview.pending_approvals?.wfh || 0}</div>
+          </div>
+        </div>
+      )}
+
+      {/* History (Leaves & WFH) */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <h3 className="font-bold text-slate-900 text-base">History</h3>
+          <div className="flex flex-wrap gap-1.5 text-xs">
+            {[
+              { id: 'all', label: `All (${allActivity.length})` },
+              { id: 'leaves', label: `Leaves (${leaveHist.length})` },
+              { id: 'wfh', label: `WFH (${wfhHist.length})` },
+            ].map(t => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setHistTab(t.id)}
+                className={`px-3 py-1.5 rounded-xl font-semibold transition ${histTab === t.id ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          {histTab === 'all' && (
+            <table className="w-full text-left text-xs text-slate-700">
+              <thead className="bg-slate-50 uppercase text-slate-400 font-semibold border-b border-slate-100">
+                <tr><th className="px-5 py-3">Type</th><th className="px-5 py-3">Employee</th><th className="px-5 py-3">Dates</th><th className="px-5 py-3">Details</th><th className="px-5 py-3">Status</th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {allActivity.length === 0 ? (
+                  <tr><td colSpan="5" className="text-center py-8 text-slate-400">No leave or WFH history yet.</td></tr>
+                ) : allActivity.map(item => (
+                  <tr key={item.key} className="hover:bg-slate-50/70">
+                    <td className="px-5 py-3 font-semibold text-indigo-700">{item.kind}</td>
+                    <td className="px-5 py-3 font-semibold text-slate-900">{item.employee} {item.code ? <span className="text-slate-400 font-mono">({item.code})</span> : ''}</td>
+                    <td className="px-5 py-3">{item.when}</td>
+                    <td className="px-5 py-3 text-slate-600">{item.detail}</td>
+                    <td className="px-5 py-3">
+                      <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${statusPillClass(item.status)}`}>
+                        {formatStatusLabel(item.status)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {histTab === 'leaves' && (
+            <table className="w-full text-left text-xs text-slate-700">
+              <thead className="bg-slate-50 uppercase text-slate-400 font-semibold border-b border-slate-100">
+                <tr><th className="px-5 py-3">Employee</th><th className="px-5 py-3">Type</th><th className="px-5 py-3">Dates</th><th className="px-5 py-3">Reason</th><th className="px-5 py-3">Status</th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {leaveHist.length === 0 ? (
+                  <tr><td colSpan="5" className="text-center py-8 text-slate-400">No leave history.</td></tr>
+                ) : leaveHist.map(l => (
+                  <tr key={l.id}>
+                    <td className="px-5 py-3 font-semibold text-slate-900">{l.employee_name}</td>
+                    <td className="px-5 py-3">{l.leave_type}</td>
+                    <td className="px-5 py-3">{l.start_date} → {l.end_date}</td>
+                    <td className="px-5 py-3">{l.reason}</td>
+                    <td className="px-5 py-3"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${statusPillClass(l.status)}`}>{formatStatusLabel(l.status)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {histTab === 'wfh' && (
+            <table className="w-full text-left text-xs text-slate-700">
+              <thead className="bg-slate-50 uppercase text-slate-400 font-semibold border-b border-slate-100">
+                <tr><th className="px-5 py-3">Employee</th><th className="px-5 py-3">Dates</th><th className="px-5 py-3">Reason</th><th className="px-5 py-3">Status</th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {wfhHist.length === 0 ? (
+                  <tr><td colSpan="4" className="text-center py-8 text-slate-400">No WFH history.</td></tr>
+                ) : wfhHist.map(w => (
+                  <tr key={w.id}>
+                    <td className="px-5 py-3 font-semibold text-slate-900">{w.employee_name}</td>
+                    <td className="px-5 py-3">{w.start_date} → {w.end_date}</td>
+                    <td className="px-5 py-3">{w.reason}</td>
+                    <td className="px-5 py-3"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${statusPillClass(w.status)}`}>{formatStatusLabel(w.status)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* Reporting Manager (at bottom of Home) */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Reporting Manager</div>
+          <div className="text-sm font-bold text-slate-900 mt-0.5">
+            {summary?.manager_name || 'Not Assigned'}
+          </div>
+        </div>
+        {summary?.manager_email && (
+          <div className="text-xs font-medium text-indigo-600">{summary.manager_email}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 3. ATTENDANCE TAB
+function AttendanceTab({ user, employee, isApprover, showToast }) {
+  const [subTab, setSubTab] = useState('logs');
+  const [history, setHistory] = useState([]);
+  const [teamAttendance, setTeamAttendance] = useState([]);
+  const [todayAtt, setTodayAtt] = useState(null);
+  const [shiftInfo, setShiftInfo] = useState({ start_time: '09:00', end_time: '18:00' });
+  const [clockLoading, setClockLoading] = useState(false);
+
+  const loadAll = useCallback(async () => {
+    try {
+      const [hist, sum] = await Promise.all([
+        api('/attendance/my-history'),
+        api('/dashboard/my-summary'),
+      ]);
+      setHistory(hist);
+      if (sum?.shift) setShiftInfo(sum.shift);
+      try { setTodayAtt(await api('/attendance/today')); } catch { setTodayAtt(null); }
+
+      if (isApprover) {
+        setTeamAttendance(await api('/attendance/team'));
+      }
+    } catch {}
+  }, [isApprover]);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const handleClockAction = async (action) => {
+    setClockLoading(true);
+    try {
+      await api(`/attendance/${action}`, 'POST');
+      showToast(action === 'clock-in' ? 'Clocked in (Present)' : 'Clocked out');
+      loadAll();
+    } catch (err) { showToast(err.message, 'error'); } finally { setClockLoading(false); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Attendance</h2>
+        </div>
+        <div className="flex items-center gap-2.5">
+          {employee && (!todayAtt?.check_in ? (
+            <button onClick={() => handleClockAction('clock-in')} disabled={clockLoading} className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs shadow-sm">
+              Clock In
+            </button>
+          ) : !todayAtt.check_out ? (
+            <button onClick={() => handleClockAction('clock-out')} disabled={clockLoading} className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs shadow-sm">
+              Clock Out
+            </button>
+          ) : (
+            <span className="px-3 py-2 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-semibold">Present Today</span>
+          ))}
+        </div>
+      </div>
+
+      {/* Sub-navigation */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-1">
+        <button onClick={() => setSubTab('logs')} className={`px-4 py-2 rounded-xl text-xs font-semibold transition ${subTab === 'logs' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-white'}`}>
+          My Attendance Logs
+        </button>
+        {isApprover && (
+          <button onClick={() => setSubTab('team')} className={`px-4 py-2 rounded-xl text-xs font-semibold transition ${subTab === 'team' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-white'}`}>
+            Team Attendance
+          </button>
+        )}
+      </div>
+
+      {subTab === 'logs' && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-700">
+              <thead className="bg-slate-50 uppercase text-slate-400 font-semibold border-b border-slate-100">
+                <tr>
+                  <th className="px-5 py-3.5">Date</th>
+                  <th className="px-5 py-3.5">Shift Timing</th>
+                  <th className="px-5 py-3.5">Clock In</th>
+                  <th className="px-5 py-3.5">Clock Out</th>
+                  <th className="px-5 py-3.5">Total Hours (In → Out)</th>
+                  <th className="px-5 py-3.5">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {history.length === 0 ? (
+                  <tr><td colSpan="6" className="text-center py-10 text-slate-400">No attendance logs yet.</td></tr>
+                ) : history.map(rec => {
+                  const st = rec.check_in ? 'Present' : 'Absent';
+                  return (
+                    <tr key={rec.id} className="hover:bg-slate-50/70">
+                      <td className="px-5 py-3.5 font-semibold text-slate-900">{rec.attendance_date}</td>
+                      <td className="px-5 py-3.5 text-slate-500">{formatTime12(shiftInfo.start_time)} – {formatTime12(shiftInfo.end_time)}</td>
+                      <td className="px-5 py-3.5 font-mono">{rec.check_in ? new Date(rec.check_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                      <td className="px-5 py-3.5 font-mono">{rec.check_out ? new Date(rec.check_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                      <td className="px-5 py-3.5 font-semibold text-slate-900">{formatBetweenDuration(rec.check_in, rec.check_out, rec.work_hours)}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                          st === 'Present' ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-200'
+                        }`}>{st}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {subTab === 'team' && isApprover && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-100">
+            <div className="font-bold text-slate-800 text-sm">Assigned Team Attendance</div>
+            <div className="text-[11px] text-slate-400">Scoped to employees in your reporting line / department</div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-700">
+              <thead className="bg-slate-50 uppercase text-slate-400 font-semibold border-b border-slate-100">
+                <tr><th className="px-5 py-3">Employee</th><th className="px-5 py-3">Department</th><th className="px-5 py-3">Date</th><th className="px-5 py-3">Total Hours</th><th className="px-5 py-3">Status</th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {teamAttendance.length === 0 ? (
+                  <tr><td colSpan="5" className="text-center py-8 text-slate-400">No team records found.</td></tr>
+                ) : teamAttendance.map(t => {
+                  const st = t.check_in ? 'Present' : 'Absent';
+                  return (
+                    <tr key={t.id}>
+                      <td className="px-5 py-3 font-semibold text-slate-900">{t.employee_name} <span className="text-slate-400 font-mono">({t.employee_code})</span></td>
+                      <td className="px-5 py-3">{t.department_name}</td>
+                      <td className="px-5 py-3">{t.attendance_date}</td>
+                      <td className="px-5 py-3 font-semibold">{formatBetweenDuration(t.check_in, t.check_out, t.work_hours)}</td>
+                      <td className="px-5 py-3"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${st === 'Present' ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'bg-rose-50 text-rose-700 ring-1 ring-rose-200'}`}>{st}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 4. LEAVES TAB
+function LeavesTab({ employee, isManager, showToast }) {
+  const [myLeaves, setMyLeaves] = useState([]);
+  const [pendingLeaves, setPendingLeaves] = useState([]);
+  const [leaveTypes, setLeaveTypes] = useState([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [leaveTypeId, setLeaveTypeId] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [reason, setReason] = useState('');
+  const [formError, setFormError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadAll = useCallback(async () => {
+    try {
+      const types = await api('/leaves/types');
+      setLeaveTypes(types);
+      if (types.length > 0) setLeaveTypeId(prev => prev || String(types[0].id));
+      if (employee) setMyLeaves(await api('/leaves/my-leaves'));
+      if (isManager) setPendingLeaves(await api('/leaves/pending'));
+    } catch {}
+  }, [employee, isManager]);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const handleApply = async (e) => {
+    e.preventDefault();
+    setFormError('');
+    if (startDate && endDate && endDate < startDate) {
+      const msg = 'End date cannot be earlier than start date.';
+      setFormError(msg);
+      showToast(msg, 'error');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api('/leaves/apply', 'POST', { leave_type_id: parseInt(leaveTypeId, 10), start_date: startDate, end_date: endDate, reason });
+      showToast('Leave request submitted');
+      setModalOpen(false);
+      setReason('');
+      setFormError('');
+      loadAll();
+    } catch (err) {
+      setFormError(err.message);
+      showToast(err.message, 'error');
+    } finally { setSubmitting(false); }
+  };
+
+  const handleReview = async (leaveId, action) => {
+    const finalAction = action === 'approve' ? 'approved' : 'rejected';
+    const comments = prompt(`Remarks for ${finalAction}:`, finalAction === 'approved' ? 'Approved' : 'Rejected');
+    if (comments === null) return;
+    try {
+      await api(`/leaves/${leaveId}/review`, 'POST', { action: finalAction, comments });
+      showToast(`Leave ${finalAction}`);
+      loadAll();
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const selectedTypeObj = leaveTypes.find(t => String(t.id) === String(leaveTypeId));
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Leaves</h2>
+        </div>
+        <button onClick={() => { setFormError(''); setModalOpen(true); }} className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs">+ Apply Leave</button>
+      </div>
+
+      {isManager && pendingLeaves.length > 0 && (
+        <div className="bg-white rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-3.5 bg-amber-50/70 border-b border-amber-100 font-bold text-amber-900 text-xs uppercase tracking-wider">Pending Leave Approvals ({pendingLeaves.length})</div>
+          <div className="divide-y divide-slate-100">
+            {pendingLeaves.map(req => (
+              <div key={req.id} className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-slate-900 text-sm">{req.employee_name}</span>
+                    <span className="text-slate-400">({req.employee_role})</span>
+                    {req.leave_type_name && <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-semibold text-[11px]">{req.leave_type_name}</span>}
+                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${statusPillClass(req.status)}`}>{formatStatusLabel(req.status)}</span>
+                  </div>
+                  <div className="text-slate-600">{req.start_date} to {req.end_date} · {req.reason}</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => handleReview(req.id, 'approve')} className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl">Approve</button>
+                  <button onClick={() => handleReview(req.id, 'reject')} className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-xl">Reject</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 font-bold text-slate-900 text-sm">My Leave Applications</div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs text-slate-700">
+            <thead className="bg-slate-50 uppercase text-slate-400 font-semibold border-b border-slate-100">
+              <tr><th className="px-6 py-3">Applied</th><th className="px-6 py-3">Type</th><th className="px-6 py-3">Dates</th><th className="px-6 py-3">Reason</th><th className="px-6 py-3">Status</th><th className="px-6 py-3">Approval Trail</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {myLeaves.length === 0 ? (
+                <tr><td colSpan="6" className="text-center py-8 text-slate-400">No leave requests yet.</td></tr>
+              ) : myLeaves.map(l => (
+                <tr key={l.id}>
+                  <td className="px-6 py-3">{l.applied_at ? new Date(l.applied_at).toLocaleDateString() : '—'}</td>
+                  <td className="px-6 py-3 font-medium text-indigo-700">{l.leave_type_name || 'Leave'}</td>
+                  <td className="px-6 py-3 font-semibold text-slate-900">{l.start_date} → {l.end_date}</td>
+                  <td className="px-6 py-3">{l.reason}</td>
+                  <td className="px-6 py-3"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${statusPillClass(l.status)}`}>{formatStatusLabel(l.status)}</span></td>
+                  <td className="px-6 py-3 text-[11px] text-slate-500">
+                    {l.manager_status !== 'skipped' && <span>Mgr: {l.manager_status} </span>}
+                    {l.hr_status !== 'skipped' && <span>· HR: {l.hr_status} </span>}
+                    {l.leadership_status !== 'skipped' && <span>· Leadership: {l.leadership_status}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900 mb-4">Apply for Leave</h3>
+            {formError && (
+              <div className="mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">
+                {formError}
+              </div>
+            )}
+            <form onSubmit={handleApply} className="space-y-4 text-xs">
+              <div>
+                <label className="font-semibold block mb-1">Leave Type</label>
+                <select value={leaveTypeId} onChange={e => setLeaveTypeId(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50">
+                  {leaveTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                {selectedTypeObj?.description && (
+                  <p className="text-[11px] text-slate-500 mt-1.5">{selectedTypeObj.description}</p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="font-semibold block mb-1">Start Date</label><input type="date" required value={startDate} onChange={e => { setStartDate(e.target.value); setFormError(''); }} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+                <div><label className="font-semibold block mb-1">End Date</label><input type="date" required min={startDate || undefined} value={endDate} onChange={e => { setEndDate(e.target.value); setFormError(''); }} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+              </div>
+              <div><label className="font-semibold block mb-1">Reason</label><textarea required rows="3" value={reason} onChange={e => setReason(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50"></textarea></div>
+              <div className="flex justify-end gap-2"><button type="button" onClick={() => { setFormError(''); setModalOpen(false); }} className="px-4 py-2 text-slate-600 font-semibold">Cancel</button><button type="submit" disabled={submitting} className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-semibold">Submit</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 5. WFH TAB
+function WFHTab({ employee, isManager, showToast }) {
+  const [myWfh, setMyWfh] = useState([]);
+  const [pendingWfh, setPendingWfh] = useState([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [reason, setReason] = useState('');
+
+  const loadAll = useCallback(async () => {
+    try {
+      if (employee) setMyWfh(await api('/wfh/my-requests'));
+      if (isManager) setPendingWfh(await api('/wfh/pending'));
+    } catch {}
+  }, [employee, isManager]);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const handleApply = async (e) => {
+    e.preventDefault();
+    try {
+      await api('/wfh/apply', 'POST', { start_date: startDate, end_date: endDate, reason });
+      showToast('WFH request submitted');
+      setModalOpen(false);
+      setReason('');
+      loadAll();
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const handleReview = async (wfhId, action) => {
+    const finalAction = action === 'approve' ? 'approved' : 'rejected';
+    const comments = prompt(`Remarks for ${finalAction}:`, finalAction === 'approved' ? 'Approved' : 'Rejected');
+    if (comments === null) return;
+    try {
+      await api(`/wfh/${wfhId}/review`, 'POST', { action: finalAction, comments });
+      showToast(`WFH ${finalAction}`);
+      loadAll();
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex items-center justify-between">
+        <div><h2 className="text-lg font-bold text-slate-900">Work From Home</h2></div>
+        <button onClick={() => setModalOpen(true)} className="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold text-xs">+ Request WFH</button>
+      </div>
+
+      {isManager && pendingWfh.length > 0 && (
+        <div className="bg-white rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-3.5 bg-amber-50/70 border-b border-amber-100 font-bold text-amber-900 text-xs uppercase tracking-wider">Pending WFH Approvals ({pendingWfh.length})</div>
+          <div className="divide-y divide-slate-100">
+            {pendingWfh.map(req => (
+              <div key={req.id} className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
+                <div>
+                  <div className="flex items-center gap-2"><span className="font-bold text-slate-900 text-sm">{req.employee_name}</span><span className="text-slate-400">({req.employee_role})</span><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${statusPillClass(req.status)}`}>{formatStatusLabel(req.status)}</span></div>
+                  <div className="text-slate-600 mt-1">{req.start_date} to {req.end_date} · {req.reason}</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => handleReview(req.id, 'approve')} className="px-3.5 py-1.5 bg-emerald-600 text-white font-semibold rounded-xl">Approve</button>
+                  <button onClick={() => handleReview(req.id, 'reject')} className="px-3.5 py-1.5 bg-rose-600 text-white font-semibold rounded-xl">Reject</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 font-bold text-slate-900 text-sm">My WFH Requests</div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs text-slate-700">
+            <thead className="bg-slate-50 uppercase text-slate-400 font-semibold border-b border-slate-100">
+              <tr><th className="px-6 py-3">Applied</th><th className="px-6 py-3">Dates</th><th className="px-6 py-3">Reason</th><th className="px-6 py-3">Status</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {myWfh.length === 0 ? (
+                <tr><td colSpan="4" className="text-center py-8 text-slate-400">No WFH requests yet.</td></tr>
+              ) : myWfh.map(w => (
+                <tr key={w.id}><td className="px-6 py-3">{new Date(w.applied_at).toLocaleDateString()}</td><td className="px-6 py-3 font-semibold text-slate-900">{w.start_date} → {w.end_date}</td><td className="px-6 py-3">{w.reason}</td><td className="px-6 py-3"><span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${statusPillClass(w.status)}`}>{formatStatusLabel(w.status)}</span></td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900 mb-4">Request WFH</h3>
+            <form onSubmit={handleApply} className="space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="font-semibold block mb-1">Start Date</label><input type="date" required value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+                <div><label className="font-semibold block mb-1">End Date</label><input type="date" required value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+              </div>
+              <div><label className="font-semibold block mb-1">Reason</label><textarea required rows="3" value={reason} onChange={e => setReason(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50"></textarea></div>
+              <div className="flex justify-end gap-2"><button type="button" onClick={() => setModalOpen(false)} className="px-4 py-2 text-slate-600 font-semibold">Cancel</button><button type="submit" className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-semibold">Submit</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 6. TEAM DIRECTORY & ADMIN-ONLY EMPLOYEE ONBOARDING (With Login Email + Password)
+function EmployeesTab({ user, isAdminOnly, showToast }) {
+  const [employees, setEmployees] = useState([]);
+  const [allEmployees, setAllEmployees] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [designations, setDesignations] = useState([]);
+  const [q, setQ] = useState('');
+  const [deptFilter, setDeptFilter] = useState('');
+  const [mgrFilter, setMgrFilter] = useState('');
+  const [modalOpen, setModalOpen] = useState(false);
+
+  const [code, setCode] = useState('');
+  const [fname, setFname] = useState('');
+  const [lname, setLname] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('Employee');
+  const [leadershipTitle, setLeadershipTitle] = useState('Director');
+  const [deptId, setDeptId] = useState('');
+  const [desigId, setDesigId] = useState('');
+  const [mgrId, setMgrId] = useState('');
+  const [joiningDate, setJoiningDate] = useState(new Date().toISOString().slice(0, 10));
+
+  const isGlobal = user && (['Admin', 'HR'].includes(user.role) || (user.role === 'Leadership' && (user.leadership_title || '').toLowerCase().includes('ceo')));
+
+  const loadDirectory = useCallback(async (search = q, dId = deptFilter, mId = mgrFilter) => {
+    try {
+      let url = `/employees/?scope=auto`;
+      if (search) url += `&q=${encodeURIComponent(search)}`;
+      if (dId) url += `&department_id=${dId}`;
+      if (mId) url += `&manager_id=${mId}`;
+      const [emps, depts, desigs] = await Promise.all([api(url), api('/departments/'), api('/designations/')]);
+      setEmployees(emps);
+      if (!search && !dId && !mId) setAllEmployees(emps);
+      else if (isAdminOnly) api('/employees/?scope=auto').then(setAllEmployees).catch(() => {});
+      setDepartments(depts);
+      setDesignations(desigs);
+      const activeDeptId = deptId || (depts.length > 0 ? String(depts[0].id) : '');
+      if (depts.length > 0 && !deptId) setDeptId(activeDeptId);
+      if (desigs.length > 0 && !desigId) {
+        const firstMatch = desigs.find(g => !activeDeptId || !g.department_id || String(g.department_id) === activeDeptId) || desigs[0];
+        if (firstMatch) setDesigId(String(firstMatch.id));
+      }
+    } catch {}
+  }, [q, deptFilter, mgrFilter, deptId, desigId, isAdminOnly]);
+
+  const handleDeptChange = (newDeptId) => {
+    setDeptId(newDeptId);
+    const matching = designations.filter(g => !g.department_id || String(g.department_id) === String(newDeptId));
+    if (matching.length > 0) setDesigId(String(matching[0].id));
+  };
+
+  const filteredDesignations = designations.filter(
+    g => !deptId || !g.department_id || String(g.department_id) === String(deptId)
+  );
+
+  useEffect(() => { loadDirectory(); }, []);
+
+  const handleOnboard = async (e) => {
+    e.preventDefault();
+    try {
+      await api('/employees/', 'POST', {
+        employee_code: code,
+        firstname: fname,
+        lastname: lname,
+        email,
+        password,
+        role,
+        leadership_title: role === 'Leadership' ? leadershipTitle : null,
+        department_id: parseInt(deptId),
+        designation_id: parseInt(desigId),
+        manager_id: mgrId ? parseInt(mgrId) : null,
+        joining_date: joiningDate,
+      });
+      showToast(`Added ${fname} ${lname} (${email}). They can now log in!`);
+      setModalOpen(false);
+      setCode(''); setFname(''); setLname(''); setEmail(''); setPassword('');
+      loadDirectory(q, deptFilter, mgrFilter);
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const handleDeleteEmployee = async (emp) => {
+    if (!confirm(`Delete ${emp.firstname} ${emp.lastname} (${emp.email})? This permanently removes their login and records.`)) return;
+    try {
+      await api(`/employees/${emp.id}`, 'DELETE');
+      showToast(`Deleted ${emp.firstname} ${emp.lastname}`);
+      loadDirectory(q, deptFilter, mgrFilter);
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const handleUpdateManager = async (empId, managerId) => {
+    try {
+      await api(`/employees/${empId}`, 'PUT', { manager_id: managerId ? parseInt(managerId) : null });
+      showToast('Reporting manager updated');
+      loadDirectory(q, deptFilter, mgrFilter);
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const mgrSource = allEmployees.length > 0 ? allEmployees : employees;
+  const uniqueManagers = Array.from(new Map(mgrSource.filter(e => e.manager_id && e.manager_name).map(e => [e.manager_id, e.manager_name])).entries());
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Team Directory</h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            {user?.role === 'Manager' ? 'Showing only your assigned direct reports' :
+             user?.role === 'Employee' ? 'Showing your assigned team members' :
+             'Search across employees, departments, and reporting managers'}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            placeholder="Search name, code, email, dept..."
+            value={q}
+            onChange={(e) => { setQ(e.target.value); loadDirectory(e.target.value, deptFilter, mgrFilter); }}
+            className="px-3.5 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 w-60"
+          />
+          {isGlobal && (
+            <>
+              <select value={deptFilter} onChange={(e) => { setDeptFilter(e.target.value); loadDirectory(q, e.target.value, mgrFilter); }} className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white">
+                <option value="">All Departments</option>
+                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+              <select value={mgrFilter} onChange={(e) => { setMgrFilter(e.target.value); loadDirectory(q, deptFilter, e.target.value); }} className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white">
+                <option value="">All Managers</option>
+                {uniqueManagers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </>
+          )}
+          {isAdminOnly && (
+            <button onClick={() => setModalOpen(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-xl">
+              + Add Employee
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {employees.length === 0 ? (
+          <div className="col-span-3 bg-white rounded-2xl border border-slate-200 p-10 text-center text-xs text-slate-400">
+            No matching employees found in your assigned scope.
+          </div>
+        ) : employees.map(emp => (
+          <div key={emp.id} className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm hover:shadow-md transition">
+            <div className="flex items-start gap-3.5">
+              <Avatar name={`${emp.firstname} ${emp.lastname}`} src={emp.profile_pic} sizeClass="w-11 h-11 text-sm" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-sm text-slate-900 truncate">{emp.firstname} {emp.lastname}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700">{emp.leadership_title || emp.role}</span>
+                </div>
+                <div className="text-xs text-indigo-600 font-medium mt-0.5">{emp.designation_title || 'Team Member'}</div>
+                <div className="text-[11px] text-slate-400 mt-0.5">{emp.department_name || 'Department'} · {emp.employee_code}</div>
+              </div>
+            </div>
+            <div className="mt-4 pt-3 border-t border-slate-100 text-[11px] text-slate-600 space-y-1.5">
+              <div className="flex justify-between items-center gap-2">
+                <span>Reporting Manager</span>
+                {isAdminOnly ? (
+                  <select
+                    value={emp.manager_id || ''}
+                    onChange={e => handleUpdateManager(emp.id, e.target.value)}
+                    className="px-2 py-1 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 font-semibold max-w-[165px]"
+                  >
+                    <option value="">None / HR Review</option>
+                    {mgrSource.filter(m => m.id !== emp.id).map(m => (
+                      <option key={m.id} value={m.id}>{m.firstname} {m.lastname} ({m.leadership_title || m.role})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <strong className="text-slate-800">{emp.manager_name || 'Executive'}</strong>
+                )}
+              </div>
+              <div className="flex justify-between"><span>Email</span><span className="text-slate-500 truncate ml-2">{emp.email}</span></div>
+              {isAdminOnly && emp.user_id !== user.id && (
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteEmployee(emp)}
+                    className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold transition"
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Admin-Only Add Employee & Login Credentials Modal */}
+      {modalOpen && isAdminOnly && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl my-8">
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Add Employee & Login Access</h3>
+                <p className="text-[11px] text-slate-400">Admin creates the employee profile and login email/password</p>
+              </div>
+              <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+            <form onSubmit={handleOnboard} className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="font-semibold block mb-1">First Name</label><input type="text" required value={fname} onChange={e => setFname(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+                <div><label className="font-semibold block mb-1">Last Name</label><input type="text" required value={lname} onChange={e => setLname(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="font-semibold block mb-1">Employee Code</label><input type="text" placeholder="e.g. EMP-301" required value={code} onChange={e => setCode(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+                <div><label className="font-semibold block mb-1">Joining Date</label><input type="date" required value={joiningDate} onChange={e => setJoiningDate(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="font-semibold block mb-1">Login Email</label><input type="email" placeholder="user@company.com" required value={email} onChange={e => setEmail(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+                <div><label className="font-semibold block mb-1">Login Password</label><input type="password" minLength="6" placeholder="Min 6 chars" required value={password} onChange={e => setPassword(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Role</label>
+                  <select value={role} onChange={e => setRole(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 font-medium">
+                    <option value="Employee">Employee</option>
+                    <option value="Manager">Manager</option>
+                    <option value="HR">HR</option>
+                    <option value="Admin">Admin</option>
+                    <option value="Leadership">Leadership</option>
+                  </select>
+                </div>
+                {role === 'Leadership' ? (
+                  <div>
+                    <label className="font-semibold block mb-1">Leadership Title</label>
+                    <select value={leadershipTitle} onChange={e => setLeadershipTitle(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 font-medium">
+                      <option value="Director">Director</option>
+                      <option value="CEO">CEO</option>
+                    </select>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="font-semibold block mb-1">Reporting Manager</label>
+                    <select value={mgrId} onChange={e => setMgrId(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50">
+                      <option value="">None / HR Review</option>
+                      {mgrSource.map(m => <option key={m.id} value={m.id}>{m.firstname} {m.lastname} ({m.leadership_title || m.role})</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Department</label>
+                  <select value={deptId} onChange={e => handleDeptChange(e.target.value)} required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50">
+                    {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">Designation</label>
+                  <select value={desigId} onChange={e => setDesigId(e.target.value)} required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50">
+                    {(filteredDesignations.length > 0 ? filteredDesignations : designations).map(g => <option key={g.id} value={g.id}>{g.title}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-3">
+                <button type="button" onClick={() => setModalOpen(false)} className="px-4 py-2 text-slate-600 font-semibold">Cancel</button>
+                <button type="submit" className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold">Create Employee & Login</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 7. HOLIDAYS & NOTIFICATIONS
+function HolidaysTab({ isAdminOrHR, showToast }) {
+  const [holidays, setHolidays] = useState([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [date, setDate] = useState('');
+  const [desc, setDesc] = useState('');
+  const [formError, setFormError] = useState('');
+
+  const loadHolidays = useCallback(async () => { try { setHolidays(await api('/holidays/')); } catch {} }, []);
+  useEffect(() => { loadHolidays(); }, [loadHolidays]);
+
+  const handleAdd = async (e) => {
+    e.preventDefault();
+    setFormError('');
+    try {
+      await api('/holidays/', 'POST', { name, holiday_date: date, description: desc || null, is_optional: false });
+      showToast('Holiday added');
+      setModalOpen(false);
+      setName(''); setDate(''); setDesc('');
+      loadHolidays();
+    } catch (err) {
+      setFormError(err.message);
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleDelete = async (h) => {
+    if (!confirm(`Delete holiday "${h.name}"?`)) return;
+    try {
+      await api(`/holidays/${h.id}`, 'DELETE');
+      showToast('Holiday deleted');
+      loadHolidays();
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex items-center justify-between">
+        <div><h2 className="text-lg font-bold text-slate-900">Holidays</h2></div>
+        {isAdminOrHR && <button onClick={() => { setFormError(''); setModalOpen(true); }} className="px-4 py-2 bg-indigo-600 text-white text-xs font-semibold rounded-xl">+ Add Holiday</button>}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {holidays.length === 0 ? (
+          <div className="col-span-3 bg-white rounded-2xl border border-slate-200 p-10 text-center text-xs text-slate-400">No holidays added yet.</div>
+        ) : holidays.map(h => (
+          <div key={h.id} className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col justify-between gap-3">
+            <div>
+              <span className="text-xs font-bold text-indigo-600">{h.holiday_date}</span>
+              <h4 className="font-bold text-slate-900 mt-1">{h.name}</h4>
+              <p className="text-xs text-slate-500 mt-1">{h.description || 'Public holiday'}</p>
+            </div>
+            {isAdminOrHR && (
+              <div className="flex justify-end">
+                <button type="button" onClick={() => handleDelete(h)} className="text-[11px] font-semibold text-rose-600 hover:underline">Delete</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900 mb-4">Add Holiday</h3>
+            {formError && <div className="mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">{formError}</div>}
+            <form onSubmit={handleAdd} className="space-y-3 text-xs">
+              <input type="text" placeholder="Holiday Name" required value={name} onChange={e => setName(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              <input type="date" required value={date} onChange={e => setDate(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              <input type="text" placeholder="Description" value={desc} onChange={e => setDesc(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50" />
+              <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={() => setModalOpen(false)} className="px-4 py-2 text-slate-600 font-semibold">Cancel</button><button type="submit" className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-semibold">Save</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotificationsTab({ onUpdate, showToast }) {
+  const [notifications, setNotifications] = useState([]);
+  const loadNotifications = useCallback(async () => {
+    try { setNotifications(await api('/notifications/')); onUpdate(); } catch {}
+  }, [onUpdate]);
+  useEffect(() => { loadNotifications(); }, [loadNotifications]);
+  const markRead = async (id) => { try { await api(`/notifications/${id}/read`, 'PATCH'); loadNotifications(); } catch {} };
+  const markAllRead = async () => { try { await api('/notifications/read-all', 'PATCH'); showToast('All marked read'); loadNotifications(); } catch {} };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-5 flex justify-between items-center">
+        <h2 className="text-lg font-bold text-slate-900">Notifications</h2>
+        <button onClick={markAllRead} className="px-3.5 py-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 rounded-xl hover:bg-indigo-50">Mark All Read</button>
+      </div>
+      <div className="bg-white rounded-2xl border border-slate-200/80 divide-y divide-slate-100 overflow-hidden">
+        {notifications.length === 0 ? <div className="p-10 text-center text-xs text-slate-400">No notifications.</div> : notifications.map(n => (
+          <div key={n.id} className={`p-4 flex justify-between items-start text-xs ${n.is_read ? '' : 'bg-indigo-50/40'}`}>
+            <div>
+              <div className="font-bold text-slate-900">{n.title}</div>
+              <div className="text-slate-600 mt-0.5">{n.message}</div>
+            </div>
+            {!n.is_read && <button onClick={() => markRead(n.id)} className="px-2.5 py-1 border border-slate-200 rounded-lg text-slate-600 hover:bg-white">Mark Read</button>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

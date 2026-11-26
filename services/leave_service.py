@@ -86,6 +86,7 @@ def _format_leave(session: Session, l: LeaveRequest) -> LeaveResponse:
     emp = session.get(Employee, l.employee_id)
     user = get_employee_user(session, emp)
     dept = session.get(Department, emp.department_id) if emp and emp.department_id else None
+    lt = session.get(LeaveType, l.leave_type_id) if l.leave_type_id else None
     return LeaveResponse(
         id=l.id,
         employee_id=l.employee_id,
@@ -94,6 +95,7 @@ def _format_leave(session: Session, l: LeaveRequest) -> LeaveResponse:
         employee_role=user.role if user else "Employee",
         department_name=dept.name if dept else None,
         leave_type_id=l.leave_type_id,
+        leave_type_name=lt.name if lt else None,
         start_date=l.start_date,
         end_date=l.end_date,
         reason=l.reason,
